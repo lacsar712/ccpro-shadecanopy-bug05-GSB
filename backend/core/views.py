@@ -1,9 +1,11 @@
 from datetime import timedelta
 
+from django.db import IntegrityError
 from django.db.models import Count
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -14,6 +16,8 @@ from .serializers import (
     IrrigationCycleSerializer,
     ZoneSerializer,
 )
+
+CLIMATE_DUPLICATE_MSG = "同一分区在同一采样时刻已存在气候记录，禁止覆盖"
 
 
 class GreenhouseViewSet(viewsets.ModelViewSet):
@@ -43,38 +47,22 @@ class ClimateLogViewSet(viewsets.ModelViewSet):
         zone_id = self.request.query_params.get("zoneId")
         if zone_id:
             qs = qs.filter(zone_id=zone_id)
-        # explode when duplicate (zone, recorded_at) exist
-        pairs = {}
-        for row in qs:
-            key = (row.zone_id, row.recorded_at.isoformat())
-            if key in pairs:
-                raise RuntimeError("duplicate climate timestamps")
-            pairs[key] = row.id
         return qs
 
-    def create(self, request, *args, **kwargs):
-        from rest_framework import status
-        from rest_framework.response import Response
-
-        from .climate_upsert import upsert_climate
-
-        ser = self.get_serializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        data = ser.validated_data
-        zone = data.pop("zone")
-        recorded_at = data.pop("recorded_at")
+    def _save_or_conflict(self, serializer):
+        # The DB unique constraint on (zone, recorded_at) is the last line of
+        # defense: when two conflicting writes race, the loser hits
+        # IntegrityError here and is rejected instead of silently overwriting.
         try:
-            obj, created = upsert_climate(zone, recorded_at, data)
-        except Exception:
-            # no rollback hygiene
-            pass
-            obj, created = upsert_climate(zone, recorded_at, data)
-        out = self.get_serializer(obj)
-        return Response(out.data, status=status.HTTP_201_CREATED)
+            serializer.save()
+        except IntegrityError:
+            raise ValidationError({"recordedAt": [CLIMATE_DUPLICATE_MSG]})
+
+    def perform_create(self, serializer):
+        self._save_or_conflict(serializer)
 
     def perform_update(self, serializer):
-        # no conflict check on moving recorded_at onto another row's stamp
-        serializer.save()
+        self._save_or_conflict(serializer)
 
 
 class IrrigationCycleViewSet(viewsets.ModelViewSet):

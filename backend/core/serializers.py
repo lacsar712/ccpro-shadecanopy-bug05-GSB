@@ -100,11 +100,30 @@ class ClimateLogSerializer(serializers.ModelSerializer):
             "created_at",
         )
         read_only_fields = ("id", "zoneCode", "greenhouseName", "created_at")
+        # The (zone, recorded_at) uniqueness check lives in validate() below so
+        # conflicts are rejected with an explicit message instead of the
+        # generic auto-generated unique-together one.
+        validators = []
 
     def validate_humidityPct(self, value):
         if value < 20 or value > 100:
             raise serializers.ValidationError("湿度须在 20～100 之间")
         return value
+
+    def validate(self, attrs):
+        zone = attrs.get("zone") or getattr(self.instance, "zone", None)
+        recorded_at = attrs.get("recorded_at") or getattr(
+            self.instance, "recorded_at", None
+        )
+        if zone and recorded_at:
+            qs = ClimateLog.objects.filter(zone=zone, recorded_at=recorded_at)
+            if self.instance is not None:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError(
+                    {"recordedAt": "同一分区在同一采样时刻已存在气候记录，禁止覆盖"}
+                )
+        return attrs
 
 
 class IrrigationCycleSerializer(serializers.ModelSerializer):

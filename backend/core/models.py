@@ -66,6 +66,12 @@ class ClimateLog(models.Model):
 
     class Meta:
         ordering = ["-recorded_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["zone", "recorded_at"],
+                name="uniq_climate_zone_recorded_at",
+            )
+        ]
 
     def __str__(self):
         return f"Climate@{self.zone_id} {self.recorded_at}"
