@@ -101,10 +101,39 @@ class ClimateLogSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ("id", "zoneCode", "greenhouseName", "created_at")
 
+    # The model constraint already enforces (zone, recorded_at) at the DB
+    # level; validate() below reports it with an explicit Chinese message, so
+    # drop DRF's auto-generated UniqueTogetherValidator (generic message, and
+    # useless under concurrent submits).
+    def get_unique_together_validators(self):
+        return []
+
+    CONFLICT_MESSAGE = "同一分区在该采样时刻已有气候记录，请更换采样时间或编辑原有记录"
+
     def validate_humidityPct(self, value):
         if value < 20 or value > 100:
             raise serializers.ValidationError("湿度须在 20～100 之间")
         return value
+
+    def validate(self, attrs):
+        zone = attrs.get("zone")
+        if zone is None and self.instance is not None:
+            zone = self.instance.zone
+        recorded_at = attrs.get("recorded_at")
+        if recorded_at is None and self.instance is not None:
+            recorded_at = self.instance.recorded_at
+
+        if zone is not None and recorded_at is not None:
+            clash = ClimateLog.objects.filter(
+                zone=zone, recorded_at=recorded_at
+            )
+            if self.instance is not None:
+                clash = clash.exclude(pk=self.instance.pk)
+            if clash.exists():
+                raise serializers.ValidationError(
+                    {"recordedAt": [self.CONFLICT_MESSAGE]}
+                )
+        return attrs
 
 
 class IrrigationCycleSerializer(serializers.ModelSerializer):
